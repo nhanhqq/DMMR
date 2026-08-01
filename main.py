@@ -54,13 +54,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     args.source_subjects = args.subjects-1
     args.seed3_path = "../eeg_data/ExtractedFeatures/"
-    args.seed4_path = "../eeg_data/eeg_feature_smooth/"
-    if cuda:
-        args.num_workers_train = 4
-        args.num_workers_test = 2
-    else:
-        args.num_workers_train = 0
-        args.num_workers_test = 0
+    args.seed4_path = "../seed-iv-extracted/eeg_feature_smooth/"
+    args.num_workers_train = 0
+    args.num_workers_test = 0
     if args.dataset_name == "seed3":
         args.path = args.seed3_path
         args.cls_classes = 3
@@ -70,9 +66,10 @@ if __name__ == '__main__':
     elif args.dataset_name == "seed4":
         args.path = args.seed4_path
         args.cls_classes = 4
-        args.time_steps = 10
+        args.time_steps = 5
         args.batch_size = 256  #batch_size
-        args.epoch_preTraining = 400  #epoch of the pre-training phase
+        args.epoch_preTraining = 100  #epoch of the pre-training phase
+        args.epoch_fineTuning = 100
     else:
         print("need to define the input dataset")
     optim_config = {"lr": args.lr, "weight_decay": args.weight_decay}
@@ -85,7 +82,7 @@ if __name__ == '__main__':
         data_loader_dict = {"source_loader": source_loaders, "test_loader":test_loader}
         # 2. main
         acc = main(data_loader_dict, args, optim_config, cuda, writer, one_subject)
-        writer.add_scalars('single experiment acc: ',
+        writer.add_scalars('single experiment acc_ ',
                            {'test acc': acc}, one_subject + 1)
         writer.flush()
         acc_list.append(acc)
@@ -93,8 +90,8 @@ if __name__ == '__main__':
     writer.add_text('final acc std', str(np.std(acc_list)))
     acc_list_str = [str(x) for x in acc_list]
     writer.add_text('final each acc', ",".join(acc_list_str))
-    writer.add_scalars('final experiment acc scala: /avg',
+    writer.add_scalars('final experiment acc scala_ /avg',
                        {'test acc': np.average(acc_list)})
-    writer.add_scalars('final experiment acc scala: /std',
+    writer.add_scalars('final experiment acc scala_ /std',
                        {'test acc': np.std(acc_list)})
     writer.close()

@@ -54,6 +54,7 @@ def load_trained_data(samples_path_list, args):
     # load the label data
     _, _, labels = get_number_of_label_n_trial(args.dataset_name)
     label = labels[int(args.session)-1]
+    
     if args.dataset_name=="seed3":
         label = np.resize(label, (15,))
         label = np.reshape(label, (1, 15))
@@ -124,6 +125,12 @@ def getDataLoaders(one_subject, args):
     sources_sample, sources_label = load4train(source_path_list, args)
     targets_sample, targets_label = load4train(target_path_list, args)
 
+    if torch.cuda.is_available():
+        sources_sample = [s.cuda() for s in sources_sample]
+        sources_label = [l.cuda() for l in sources_label]
+        targets_sample = [t.cuda() for t in targets_sample]
+        targets_label = [l.cuda() for l in targets_label]
+
     if(len(targets_label)==1):
         target_sample = targets_sample[0]
         target_label = targets_label[0]
@@ -136,6 +143,6 @@ def getDataLoaders(one_subject, args):
 
     source_loaders = []
     for j in range(len(source_dsets)):
-        source_loaders.append(torch.utils.data.DataLoader(source_dsets[j], args.batch_size, shuffle=True, num_workers=args.num_workers_train, drop_last=True))
-    test_loader = torch.utils.data.DataLoader(target_dset, args.batch_size, shuffle=False, num_workers=args.num_workers_test, drop_last=True)
+        source_loaders.append(torch.utils.data.DataLoader(source_dsets[j], args.batch_size, shuffle=True, num_workers=0, drop_last=True))
+    test_loader = torch.utils.data.DataLoader(target_dset, args.batch_size, shuffle=False, num_workers=0, drop_last=True)
     return source_loaders, test_loader

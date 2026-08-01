@@ -85,7 +85,7 @@ if __name__ == '__main__':
         data_loader_dict = {"source_loader": source_loaders, "test_loader":test_loader}
         # 2. main
         acc = main(data_loader_dict, args, optim_config, cuda, writer, one_subject)
-        writer.add_scalars('single experiment acc: ',
+        writer.add_scalars('single experiment acc_ ',
                            {'test acc': acc}, one_subject + 1)
         writer.flush()
         acc_list.append(acc)
@@ -93,8 +93,8 @@ if __name__ == '__main__':
     writer.add_text('final acc std', str(np.std(acc_list)))
     acc_list_str = [str(x) for x in acc_list]
     writer.add_text('final each acc', ",".join(acc_list_str))
-    writer.add_scalars('final experiment acc scala: /avg',
+    writer.add_scalars('final experiment acc scala_ /avg',
                        {'test acc': np.average(acc_list)})
-    writer.add_scalars('final experiment acc scala: /std',
+    writer.add_scalars('final experiment acc scala_ /std',
                        {'test acc': np.std(acc_list)})
     writer.close()

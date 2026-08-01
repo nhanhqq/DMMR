@@ -21,11 +21,14 @@ def trainDMMR(data_loader_dict, optimizer_config, cuda, args, iteration, writer,
     optimizer_PreTraining = torch.optim.Adam(preTrainModel.parameters(), **optimizer_config)
 
     acc_final = 0
+    best_rec_loss = float('inf')
+    pretrain_patience = 0
     for epoch in range(args.epoch_preTraining):
         print("epoch: "+str(epoch))
         start_time_pretrain = time.time()
         preTrainModel.train()
         data_set_all = 0
+        epoch_rec_loss = 0.0
         for i in range(1, iteration + 1):
             p = float(i + epoch * iteration) / args.epoch_preTraining / iteration
             m = 2. / (1. + np.exp(-10 * p)) - 1 # for the gradient reverse layer (GRL)
@@ -82,13 +85,25 @@ def trainDMMR(data_loader_dict, optimizer_config, cuda, args, iteration, writer,
                 loss_pretrain = rec_loss + args.beta * sim_loss
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
+                epoch_rec_loss += rec_loss.item()
+        epoch_rec_loss /= (iteration * len(source_iters))
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
         print("The time required for one pre-training epoch is：", pretrain_epoch_time, "second")
         print("rec_loss: "+str(rec_loss))
+
+        # Early stopping for pre-training (patience=2)
+        if epoch_rec_loss < best_rec_loss:
+            best_rec_loss = epoch_rec_loss
+            pretrain_patience = 0
+        else:
+            pretrain_patience += 1
+            if pretrain_patience >= 2:
+                print(f"Pre-training early stopping at epoch {epoch} because reconstruction loss did not improve (best: {best_rec_loss:.6f}, current: {epoch_rec_loss:.6f})")
+                break
 
     # The fine-tuning phase
     source_iters2 = []
@@ -102,6 +117,7 @@ def trainDMMR(data_loader_dict, optimizer_config, cuda, args, iteration, writer,
     optimizer_FineTuning = torch.optim.Adam(fineTuneModel.parameters(), **optimizer_config)
     if cuda:
         fineTuneModel = fineTuneModel.cuda()
+    finetune_patience = 0
     for epoch in range(args.epoch_fineTuning):
         print("epoch: " + str(epoch))
         start_time = time.time()
@@ -143,21 +159,27 @@ def trainDMMR(data_loader_dict, optimizer_config, cuda, args, iteration, writer,
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
         # test the fine-tuned model with the data of unseen target subject
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
             best_pretrain_model = copy.deepcopy(preTrainModel.state_dict())
             best_tune_model = copy.deepcopy(fineTuneModel.state_dict())
             best_test_model = copy.deepcopy(testModel.state_dict())
+            finetune_patience = 0
+        else:
+            finetune_patience += 1
+            if finetune_patience >= 2:
+                print(f"Fine-tuning early stopping at epoch {epoch} because validation accuracy did not improve (best: {acc_final:.4f}, current: {acc_DMMR:.4f})")
+                break
     modelDir = "model/" + args.way + "/" + args.index + "/"
     try:
         os.makedirs(modelDir)
@@ -167,6 +189,11 @@ def trainDMMR(data_loader_dict, optimizer_config, cuda, args, iteration, writer,
     torch.save(best_pretrain_model, modelDir + str(one_subject) + '_pretrain_model.pth')
     torch.save(best_tune_model, modelDir + str(one_subject) + '_tune_model.pth')
     torch.save(best_test_model, modelDir + str(one_subject) + '_test_model.pth')
+
+    # Save to our pipeline checkpoints
+    pipeline_dir = "../../checkpoints/teacher/"
+    os.makedirs(pipeline_dir, exist_ok=True)
+    torch.save(best_tune_model, os.path.join(pipeline_dir, f'best_model_sub{one_subject+1}.pth'))
     return acc_final
 
 ############## Ablation studies ##############
@@ -243,7 +270,7 @@ def trainDMMR_WithoutMix(data_loader_dict, optimizer_config, cuda, args, iterati
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
@@ -304,15 +331,15 @@ def trainDMMR_WithoutMix(data_loader_dict, optimizer_config, cuda, args, iterati
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
 
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
@@ -401,7 +428,7 @@ def trainDMMR_WithoutNoise(data_loader_dict, optimizer_config, cuda, args, itera
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
@@ -462,15 +489,15 @@ def trainDMMR_WithoutNoise(data_loader_dict, optimizer_config, cuda, args, itera
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
 
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
@@ -559,7 +586,7 @@ def trainDMMR_WithoutBothMixAndNoise(data_loader_dict, optimizer_config, cuda, a
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
@@ -620,15 +647,15 @@ def trainDMMR_WithoutBothMixAndNoise(data_loader_dict, optimizer_config, cuda, a
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
 
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
@@ -718,7 +745,7 @@ def trainDMMR_Noise_MaskChannels(data_loader_dict, optimizer_config, cuda, args,
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
@@ -779,15 +806,15 @@ def trainDMMR_Noise_MaskChannels(data_loader_dict, optimizer_config, cuda, args,
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
 
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
@@ -876,7 +903,7 @@ def trainDMMR_Noise_MaskTimeSteps(data_loader_dict, optimizer_config, cuda, args
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
@@ -937,15 +964,15 @@ def trainDMMR_Noise_MaskTimeSteps(data_loader_dict, optimizer_config, cuda, args
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
 
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
@@ -1034,7 +1061,7 @@ def trainDMMR_Noise_ChannelsShuffling(data_loader_dict, optimizer_config, cuda, 
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
@@ -1095,15 +1122,15 @@ def trainDMMR_Noise_ChannelsShuffling(data_loader_dict, optimizer_config, cuda, 
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
 
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
@@ -1192,7 +1219,7 @@ def trainDMMR_Noise_Dropout(data_loader_dict, optimizer_config, cuda, args, iter
                 loss_pretrain.backward()
                 optimizer_PreTraining.step()
         print("data set amount: "+str(data_set_all))
-        writer.add_scalars('subject: '+str(one_subject+1)+' '+'train DMMR/loss',
+        writer.add_scalars('subject_ '+str(one_subject+1)+' '+'train DMMR/loss',
                            {'loss_pretrain':loss_pretrain.data,'rec_loss':rec_loss.data,'sim_loss':sim_loss.data}, epoch + 1)
         end_time_pretrain = time.time()
         pretrain_epoch_time = end_time_pretrain - start_time_pretrain
@@ -1253,15 +1280,15 @@ def trainDMMR_Noise_Dropout(data_loader_dict, optimizer_config, cuda, args, iter
         print("The time required for one fine-tuning epoch is：", epoch_time, "second")
         print("data set amount: " + str(data_set_all))
         acc = float(count) / data_set_all
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/loss',
                            {'cls_loss': cls_loss.data}, epoch + 1)
-        writer.add_scalar('subject: ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
-        print("acc: " + str(acc))
+        writer.add_scalar('subject_ ' + str(one_subject + 1) + ' ' + 'train DMMR/train accuracy', acc, epoch + 1)
+        print("acc_ " + str(acc))
 
         testModel = DMMRTestModel(fineTuneModel)
         acc_DMMR = testDMMR(data_loader_dict["test_loader"], testModel, cuda, args.batch_size)
         print("acc_DMMR: " + str(acc_DMMR))
-        writer.add_scalars('subject: ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
+        writer.add_scalars('subject_ ' + str(one_subject + 1) + ' ' + 'test DMMR/test acc',
                            {'test acc': acc_DMMR}, epoch + 1)
         if acc_DMMR > acc_final:
             acc_final = acc_DMMR
